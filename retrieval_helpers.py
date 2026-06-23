@@ -112,3 +112,57 @@ def hybrid_search(client: weaviate.Client, query: str, k: int, embedder, alpha: 
     )
     items = res.get("data", {}).get("Get", {}).get(CLASS_NAME, []) or []
     return [it["doc_id"] for it in items]
+
+from typing import Callable
+
+def evaluate_retriever(eval_path: str, search_fn: Callable, k_values=(5, 10)) -> dict:
+    eval_rows = []
+    with open(eval_path, "r", encoding="utf-8") as f:
+        for line in f:
+            eval_rows.append(json.loads(line))
+
+    k_max = max(k_values)
+    hits5, hits10, mrr_scores = [], [], []
+    by_type = {}
+
+    for row in eval_rows:
+        query      = row["query"]
+        gold       = row["gold_doc_id"]
+        query_type = row.get("query_type", "unknown")
+
+        returned_ids = search_fn(query, k=k_max)
+
+        hit5  = 1 if gold in returned_ids[:5]  else 0
+        hit10 = 1 if gold in returned_ids[:10] else 0
+
+        mrr = 0.0
+        if gold in returned_ids:
+            rank = returned_ids.index(gold) + 1
+            mrr  = 1.0 / rank
+
+        hits5.append(hit5)
+        hits10.append(hit10)
+        mrr_scores.append(mrr)
+
+        if query_type not in by_type:
+            by_type[query_type] = {"hits5": [], "hits10": [], "mrr": []}
+        by_type[query_type]["hits5"].append(hit5)
+        by_type[query_type]["hits10"].append(hit10)
+        by_type[query_type]["mrr"].append(mrr)
+
+    def mean(lst):
+        return sum(lst) / len(lst) if lst else 0.0
+
+    return {
+        "recall@5":  mean(hits5),
+        "recall@10": mean(hits10),
+        "mrr":       mean(mrr_scores),
+        "by_type": {
+            qt: {
+                "recall@5":  mean(vals["hits5"]),
+                "recall@10": mean(vals["hits10"]),
+                "mrr":       mean(vals["mrr"]),
+            }
+            for qt, vals in by_type.items()
+        }
+    }
